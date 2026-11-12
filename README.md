@@ -4,7 +4,7 @@
 
 ![Cyan Eclipse Grantseal icon](branding/icon.svg)
 
-*Icon: `branding/icon.svg` — owner-elected 2026-11-12 (class MARGINAL: legible at 48 px, marginal at 32 px).*
+*Icon: `branding/icon.svg` — v3, owner-elected 2026-11-12 (Tap 45). Icongate PASS: legible at 48 px and 32 px (cap 4.94 px @48 · 3.29 px @32).*
 
 Grantseal seals the exact permissions an agent or app was
 granted at connect time, and the permissions it actually
