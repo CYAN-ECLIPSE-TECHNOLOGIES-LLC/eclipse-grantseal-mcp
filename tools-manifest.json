@@ -1,0 +1,1 @@
+{"server":"eclipse-grantseal","version":"0.1.0","tools":["grantseal_seal_grant","grantseal_capture_use","grantseal_seal_renewal","grantseal_get_verdict","grantseal_check","grantseal_recompute","grantseal_export_captures"]}

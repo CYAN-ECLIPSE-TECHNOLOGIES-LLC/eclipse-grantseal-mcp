@@ -1,0 +1,14 @@
+Cyan Eclipse Grantseal v0.1.0 — builder verification transcript
+Host: Shard E /home/witness/app-family/cyan-eclipse-grantseal
+Date: 2026-11-12T02:03:58Z
+Python 3.12.3
+
+== unit suite (python3 -m unittest discover -s tests) ==
+................................................
+----------------------------------------------------------------------
+Ran 48 tests in 0.069s
+
+OK
+
+== MCP smoke (python3 smoke.py) ==
+SMOKE PASS: 7 tools · GRANT-SEALED · WITHIN-GRANT · OUT-OF-SCOPE-USE · provider-log rejected · Class G use capture refused · EXPANDED-AT-RENEWAL · check · export · recompute reproduced · credential input refused
