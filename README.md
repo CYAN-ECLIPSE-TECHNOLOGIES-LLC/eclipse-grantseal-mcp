@@ -2,6 +2,10 @@
 
 **Powered by Cyan Eclipse Technologies** — https://cetech.ai
 
+![Cyan Eclipse Grantseal icon](branding/icon.svg)
+
+*Icon: `branding/icon.svg` — owner-elected 2026-11-12 (class MARGINAL: legible at 48 px, marginal at 32 px).*
+
 Grantseal seals the exact permissions an agent or app was
 granted at connect time, and the permissions it actually
 exercised as captured in your own agent runtime. If it used a

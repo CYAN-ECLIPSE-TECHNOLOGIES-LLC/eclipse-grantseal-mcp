@@ -21,6 +21,10 @@ PROPRIETARY — CYAN ECLIPSE TECHNOLOGIES LLC · COMPANY INTELLECTUAL PROPERTY
 - **C9 (GNT-REQ-014):** the receipt journal verifies end-to-end; a tampered record and a truncated export (chain-head mismatch) are both detected; a tampered store fails closed at load.
 - **C10 (GNT-REQ-015, GNT-REQ-013, GNT-REQ-009):** metering charges exactly one op per grant seal and per use-window diff; renewals (changed or not), UNVERIFIABLE captures, rejections, refusals, recompute, and check never meter; the ledger records event class + count only. The MCP tool inventory equals SPEC §4.1 exactly; `grantseal_check` reveals verdict class + scope names only; no §5 banned term appears on any output surface.
 
+## Icon election note — 2026-11-12
+
+The product icon (`branding/icon.svg`, promoted from the v2 candidate) was **elected by the owner 2026-11-12** on the human-verified renders, class MARGINAL (48 px legible · 32 px marginal). The **formal Icongate check is still owed** when the Icongate tool lands — no gate verdict is claimed here.
+
 ## Fences the bench is asked to hold the build to
 
 Principal-side witnessing only — no provider-log verdicts, no claims over provider-internal use, no credential custody in any form (digests included), no enforcement surface, no cross-principal aggregation. Claims stay **bench-pending** until Verity's verdict lands; builder tests are not evidence.
