@@ -16,6 +16,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import grantseal  # noqa: E402
+from licence_gate import LicenceGate  # noqa: E402
 
 SERVER_NAME = "eclipse-grantseal"
 SERVER_VERSION = grantseal.TOOL_VERSION
@@ -114,8 +115,18 @@ def store() -> grantseal.Store:
         keys_path = os.environ.get(
             "ECLIPSE_GRANTSEAL_RUNTIME_KEYS",
             os.path.join(base, "keys", "runtime-keys.json"))
+        # ETO-44: licence gate wiring as in Routeseal (configured
+        # licence state or GRANTSEAL_LICENCE_REQUIRED=1 enforces;
+        # unconfigured = fixture mode, metering journal still on).
+        gate = None
+        if os.environ.get("GRANTSEAL_LICENCE_STATE") or \
+                os.environ.get("GRANTSEAL_LICENCE_REQUIRED") == "1":
+            gate = LicenceGate()
+            print(f"grantseal licence gate mode: {gate.mode}",
+                  file=sys.stderr)
         _store = grantseal.Store(
-            state, grantseal.load_runtime_keys(keys_path))
+            state, grantseal.load_runtime_keys(keys_path),
+            licence_gate=gate)
     return _store
 
 

@@ -43,6 +43,8 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import logic  # noqa: E402
+import metering_journal as _mj  # noqa: E402
+from licence_gate import LicenceGate  # noqa: E402
 
 TOOL_VERSION = "0.1.0"
 SERVER_ID = "eclipse-grantseal"
@@ -181,14 +183,25 @@ class Store:
     that does not verify at load raises, and so does any sealed
     record whose body no longer matches its seal."""
 
-    def __init__(self, state_path: str, runtime_keys: dict):
+    def __init__(self, state_path: str, runtime_keys: dict,
+                 licence_gate=None, metering_journal_path: str = None):
         self.state_path = state_path
         self.runtime_keys = runtime_keys  # runtime_id -> channel key
+        # ETO-44: licence gate (None = unconfigured fixture mode, the
+        # ACT core pattern; server.py wires a gate whenever a licence
+        # state is configured or GRANTSEAL_LICENCE_REQUIRED=1).
+        self.licence_gate = licence_gate
+        self._last_licence_state = None
         self.grants = {}
         self.uses = {}
         self.renewals = {}
         self.journal = []
         self.metering = {}
+        # ETO-44: metering journal (ACT pattern, separate file; it
+        # never feeds seals or verdicts). Always written alongside
+        # the existing metering counts.
+        self.metering_journal = _mj.MeteringJournal(
+            metering_journal_path or (state_path + ".metering.jsonl"))
         if os.path.exists(state_path):
             with open(state_path, encoding="utf-8") as fh:
                 data = json.load(fh)
@@ -207,6 +220,52 @@ class Store:
                 raise ValueError("sealed record failed seal "
                                  "verification at load (" + detail +
                                  "); store fails closed")
+            self._verify_metering_journal()
+
+    # ------------------------------------------------- ETO-44 leg
+    def _verify_metering_journal(self):
+        v = self.metering_journal.verify()
+        if not v["ok"]:
+            raise ValueError("metering journal failed verification "
+                             "at load; store fails closed")
+        if v["receipts"] and \
+                self.metering_journal.counts_by_op() != self.metering:
+            raise ValueError("metering journal counts disagree with "
+                             "store metering counts at load; store "
+                             "fails closed")
+
+    def _licence_check(self):
+        if self.licence_gate is None:
+            self._last_licence_state = "UNCONFIGURED_FIXTURE"
+            return None
+        allowed, state = self.licence_gate.check()
+        self._last_licence_state = state
+        if allowed:
+            return None
+        return {"accepted": False, "error": state,
+                "licence_state": state,
+                "reason": "licence_gate_refused"}
+
+    def _meter(self, op: str, subject: str):
+        self.metering[op] = self.metering.get(op, 0) + 1
+        self.metering_journal.append(subject, {
+            "product": "grantseal", "op": op, "subject": subject,
+            "unit_price_minor": 25, "currency": "USD",
+            "fixture": True,
+            "licence_state": self._last_licence_state})
+
+    def metering_reconcile(self) -> dict:
+        v = self.metering_journal.verify()
+        journal_counts = self.metering_journal.counts_by_op()
+        counted = sum(self.metering.values())
+        recorded = sum(journal_counts.values())
+        return {"ops_counted": counted,
+                "journal_records": recorded,
+                "counted_by_op": dict(self.metering),
+                "journal_by_op": journal_counts,
+                "chain_ok": v["ok"], "chain_head": v.get("head"),
+                "reconciled": bool(v["ok"]) and counted == recorded
+                and journal_counts == self.metering}
 
     # ---------------------------------------------------------- io
     def _save(self):
@@ -302,6 +361,9 @@ class Store:
                                         grant)
         if refusal is not None:
             return refusal
+        refusal = self._licence_check()  # ETO-44 priced boundary
+        if refusal is not None:
+            return refusal
         integration_class = grant.get("integration_class")
         granted = grant.get("granted_scopes")
         if integration_class not in ("F", "G") or \
@@ -349,8 +411,7 @@ class Store:
         record["receipt_ref"] = receipt["record_hash"]
         assert set(record.keys()) == set(GRANT_FIELDS)
         self.grants[seal_id] = record
-        self.metering[METER_GRANT] = \
-            self.metering.get(METER_GRANT, 0) + 1
+        self._meter(METER_GRANT, seal_id)
         self._save()
         return {"accepted": True, "grant_seal_id": seal_id,
                 "receipt_ref": record["receipt_ref"],
@@ -365,6 +426,9 @@ class Store:
         sealed grant."""
         refusal = self._credential_gate("grantseal_capture_use",
                                         capture)
+        if refusal is not None:
+            return refusal
+        refusal = self._licence_check()  # ETO-44 priced boundary
         if refusal is not None:
             return refusal
         seal_id = capture.get("grant_seal_id")
@@ -465,8 +529,7 @@ class Store:
         record["verdict"] = headline_verdict(record)
         if verdict["verdict"] in ("WITHIN-GRANT",
                                   "OUT-OF-SCOPE-USE"):
-            self.metering[METER_USE_DIFF] = \
-                self.metering.get(METER_USE_DIFF, 0) + 1
+            self._meter(METER_USE_DIFF, use_id)
         self._save()
         return {"accepted": True, "use_capture_id": use_id,
                 "receipt_ref": receipt["record_hash"],
