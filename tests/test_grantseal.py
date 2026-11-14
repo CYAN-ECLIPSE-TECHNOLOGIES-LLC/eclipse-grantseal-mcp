@@ -578,5 +578,113 @@ class TestAggregationFence(Base):
                              f"aggregation surface present: {token}")
 
 
+class TestRecordSealTamperRefusal(Base):
+    """F-1 cure / QA-PATTERNS P6 / GNT-REQ-014 + GNT-REQ-005:
+    every sealed record's seal is re-verified at load and in
+    recompute. A tampered record body is refused loudly at load
+    — never silently loaded — and no diff or grant computation
+    consumes an unverified record."""
+
+    def _tamper_state(self, mutate):
+        with open(self.path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        mutate(data)
+        with open(self.path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+
+    def _populate(self):
+        seal_id, _ = self.seal_and_use()
+        self.store.seal_renewal(captures.renewal(seal_id))
+        return seal_id
+
+    def test_untouched_store_reloads_and_serves(self):
+        seal_id = self._populate()
+        fresh = grantseal.Store(self.path, KEYS)
+        view = fresh.get_verdict(seal_id)
+        self.assertEqual(view["verdict"], "WITHIN-GRANT")
+        ok, _ = grantseal.verify_record_seals(
+            fresh.grants, fresh.uses, fresh.renewals)
+        self.assertTrue(ok)
+
+    def test_tampered_grant_scopes_refused_at_load(self):
+        # The verdict's own probe: widen granted_scopes in the
+        # state file, journal intact. Pre-cure this loaded
+        # silently and graded the widened scope within-grant.
+        seal_id = self._populate()
+
+        def widen(data):
+            data["grants"][seal_id]["granted_scopes"] = [
+                "gmail.readonly", "gmail.send", "drive.readonly",
+                "https://www.googleapis.com/auth/calendar.events"]
+        self._tamper_state(widen)
+        with self.assertRaises(ValueError):
+            grantseal.Store(self.path, KEYS)
+
+    def test_tampered_grant_seal_value_refused_at_load(self):
+        seal_id = self._populate()
+
+        def forge(data):
+            data["grants"][seal_id]["seal"] = "00" * 32
+        self._tamper_state(forge)
+        with self.assertRaises(ValueError):
+            grantseal.Store(self.path, KEYS)
+
+    def test_tampered_use_record_refused_at_load(self):
+        self._populate()
+
+        def shrink(data):
+            use = next(iter(data["uses"].values()))
+            use["exercised_scopes"] = ["gmail.send"]
+        self._tamper_state(shrink)
+        with self.assertRaises(ValueError):
+            grantseal.Store(self.path, KEYS)
+
+    def test_tampered_renewal_record_refused_at_load(self):
+        self._populate()
+
+        def grow(data):
+            rec = next(iter(data["renewals"].values()))
+            rec["renewed_scopes"] = rec["renewed_scopes"] + \
+                ["calendar.events"]
+        self._tamper_state(grow)
+        with self.assertRaises(ValueError):
+            grantseal.Store(self.path, KEYS)
+
+    def test_recompute_refuses_tampered_grant_capture(self):
+        seal_id, _ = self.seal_and_use(
+            exercised=["gmail.readonly", "calendar.events"])
+        export = self.store.export_captures(seal_id)
+        tampered = json.loads(json.dumps(export["grant_capture"]))
+        tampered["granted_scopes"] = tampered["granted_scopes"] \
+            + ["https://www.googleapis.com/auth/calendar.events"]
+        fresh = grantseal.recompute(tampered, export["use_capture"],
+                                    logic.TAXONOMY_VERSION)
+        self.assertEqual(fresh["verdict"], "UNVERIFIABLE")
+        self.assertIn("seal", fresh["reason"])
+
+    def test_recompute_refuses_tampered_use_capture(self):
+        seal_id, _ = self.seal_and_use(
+            exercised=["gmail.readonly", "calendar.events"])
+        export = self.store.export_captures(seal_id)
+        tampered = json.loads(json.dumps(export["use_capture"]))
+        tampered["exercised_scopes"] = ["gmail.readonly"]
+        fresh = grantseal.recompute(export["grant_capture"],
+                                    tampered,
+                                    logic.TAXONOMY_VERSION)
+        self.assertEqual(fresh["verdict"], "UNVERIFIABLE")
+        self.assertIn("seal", fresh["reason"])
+
+    def test_recompute_untouched_export_still_grades(self):
+        seal_id, _ = self.seal_and_use(
+            exercised=["gmail.readonly", "calendar.events"])
+        export = self.store.export_captures(seal_id)
+        fresh = grantseal.recompute(export["grant_capture"],
+                                    export["use_capture"],
+                                    logic.TAXONOMY_VERSION)
+        self.assertEqual(fresh["verdict"], "OUT-OF-SCOPE-USE")
+        self.assertEqual(fresh["out_of_scope_scopes"],
+                         ["calendar.events"])
+
+
 if __name__ == "__main__":
     unittest.main()

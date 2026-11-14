@@ -101,6 +101,56 @@ def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# -------------------------------------------------- record seals
+# Every record carries a seal: a digest over the record's sealed
+# body. The grant seal covers the connect-time bundle exactly as
+# minted at seal time; use and renewal seals cover every field
+# except the seal itself and the receipt reference. Load and
+# recompute re-derive these digests from the current body — a
+# record whose body no longer matches its seal is never loaded,
+# served, or graded (F-1 cure; GNT-REQ-014 / GNT-REQ-005).
+
+def grant_seal_of(record: dict) -> str:
+    """The seal a grant record with this body must carry: the
+    digest of the connect-time bundle (SPEC section 2). The
+    record's verdict facets are not part of the bundle — they are
+    minted outcomes; the seal binds the granted set itself."""
+    bundle = {k: record.get(k) for k in
+              ("connector_id", "agent_id", "granted_scopes",
+               "integration_class", "connect_timestamp",
+               "taxonomy_version")}
+    return logic.digest_obj(bundle)
+
+
+def record_seal_of(record: dict, fields) -> str:
+    """The seal a use or renewal record with this body must
+    carry: the digest over every field except the seal itself
+    and the receipt reference — the construction used at mint."""
+    return logic.digest_obj(
+        {k: record.get(k) for k in fields
+         if k not in ("seal", "receipt_ref")})
+
+
+def verify_record_seals(grants: dict, uses: dict,
+                        renewals: dict):
+    """Re-derive every sealed record's seal from its current
+    body. Returns (True, note) when all verify, or (False,
+    detail) naming the first record whose body does not match
+    its seal."""
+    for seal_id, record in grants.items():
+        if record.get("seal") != grant_seal_of(record):
+            return False, f"grant record seal mismatch: {seal_id}"
+    for use_id, record in uses.items():
+        if record.get("seal") != record_seal_of(record, USE_FIELDS):
+            return False, f"use record seal mismatch: {use_id}"
+    for renewal_id, record in renewals.items():
+        if record.get("seal") != record_seal_of(record,
+                                                RENEWAL_FIELDS):
+            return False, \
+                f"renewal record seal mismatch: {renewal_id}"
+    return True, "all record seals verify"
+
+
 def find_credential_key(obj, _path=""):
     """Return the dotted path of the first credential-shaped key
     in an input object, or None. Values are also checked for a
@@ -128,7 +178,8 @@ def find_credential_key(obj, _path=""):
 class Store:
     """JSON record store + hash-chained receipt journal + metering
     ledger (event class + count only). Fails closed: a journal
-    that does not verify at load raises."""
+    that does not verify at load raises, and so does any sealed
+    record whose body no longer matches its seal."""
 
     def __init__(self, state_path: str, runtime_keys: dict):
         self.state_path = state_path
@@ -150,6 +201,12 @@ class Store:
             if not ok:
                 raise ValueError("receipt journal failed verification "
                                  "at load; store fails closed")
+            ok, detail = verify_record_seals(self.grants, self.uses,
+                                             self.renewals)
+            if not ok:
+                raise ValueError("sealed record failed seal "
+                                 "verification at load (" + detail +
+                                 "); store fails closed")
 
     # ---------------------------------------------------------- io
     def _save(self):
@@ -275,7 +332,7 @@ class Store:
             "integration_class": integration_class,
             "connect_timestamp": bundle["connect_timestamp"],
             "taxonomy_version": logic.TAXONOMY_VERSION,
-            "seal": logic.digest_obj(bundle),
+            "seal": grant_seal_of(bundle),
             "verdict": "GRANT-SEALED",
             "use_verdict": None,
             "out_of_scope_scopes": [],
@@ -388,9 +445,7 @@ class Store:
             "grammar_basis": verdict["grammar_basis"],
             "receipt_ref": None,
         }
-        use_record["seal"] = logic.digest_obj(
-            {k: use_record[k] for k in USE_FIELDS
-             if k not in ("seal", "receipt_ref")})
+        use_record["seal"] = record_seal_of(use_record, USE_FIELDS)
         receipt = self._append_receipt(
             "use_capture",
             {"use_capture_id": use_id, "grant_seal_id": seal_id,
@@ -458,9 +513,7 @@ class Store:
             "seal": None,
             "receipt_ref": None,
         }
-        rec["seal"] = logic.digest_obj(
-            {k: rec[k] for k in RENEWAL_FIELDS
-             if k not in ("seal", "receipt_ref")})
+        rec["seal"] = record_seal_of(rec, RENEWAL_FIELDS)
         receipt = self._append_receipt(
             "renewal_record",
             {"renewal_record_id": renewal_id,
@@ -546,11 +599,23 @@ def recompute(grant_capture: dict, use_capture,
     Reads no service state (GNT-REQ-013). A Class G grant capture
     recomputes to GRANT-SEALED; no use verdict is mintable for it
     here either — a use capture offered against a Class G grant is
-    not evidence the engine will grade."""
+    not evidence the engine will grade. Both captures' seals are
+    verified against their bodies before anything is graded; a
+    capture whose seal does not verify recomputes to UNVERIFIABLE
+    and is never graded (F-1 cure)."""
     grant = grant_capture.get("grant_capture", grant_capture)
     if taxonomy_version not in logic.TAXONOMIES:
         return {"verdict": "UNVERIFIABLE",
                 "reason": "unknown_taxonomy_version"}
+    if grant.get("seal") != grant_seal_of(grant):
+        # F-1 cure: an exported grant capture is graded only when
+        # its seal verifies against its body. A tampered or
+        # unsealed capture is never graded — the set difference
+        # would run over an unverified granted set.
+        return {"verdict": "UNVERIFIABLE",
+                "reason": "grant capture seal does not verify "
+                          "against its body",
+                "taxonomy_version": taxonomy_version}
     if grant.get("integration_class") == "G" or use_capture is None:
         out = {"verdict": "GRANT-SEALED",
                "taxonomy_version": taxonomy_version}
@@ -564,6 +629,11 @@ def recompute(grant_capture: dict, use_capture,
         return {"verdict": "UNVERIFIABLE",
                 "reason": "use capture provenance is not "
                           "principal-runtime",
+                "taxonomy_version": taxonomy_version}
+    if use.get("seal") != record_seal_of(use, USE_FIELDS):
+        return {"verdict": "UNVERIFIABLE",
+                "reason": "use capture seal does not verify "
+                          "against its body",
                 "taxonomy_version": taxonomy_version}
     diff = logic.diff_use(grant.get("granted_scopes", []),
                           use.get("exercised_scopes") or [],
